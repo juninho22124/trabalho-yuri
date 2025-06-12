@@ -1,6 +1,7 @@
 import sqlite3
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
+import csv
 
 def inicializar_db():
     banco = sqlite3.connect("academico.db")
@@ -27,6 +28,24 @@ def inserir_estudante(codigo, nome):
         return True
     except sqlite3.IntegrityError:
         return False
+
+def alterar_estudante(codigo, nome):
+    with sqlite3.connect("academico.db") as banco:
+        cur = banco.cursor()
+        cur.execute("UPDATE estudantes SET nome = ? WHERE id = ?", (nome, codigo))
+        banco.commit()
+        return cur.rowcount > 0
+
+def excluir_estudante(codigo):
+    with sqlite3.connect("academico.db") as banco:
+        banco.execute("DELETE FROM estudantes WHERE id = ?", (codigo,))
+        banco.commit()
+
+def listar_estudantes():
+    with sqlite3.connect("academico.db") as banco:
+        cur = banco.cursor()
+        cur.execute("SELECT id, nome FROM estudantes ORDER BY id")
+        return cur.fetchall()
 
 def inserir_materia(codigo, nome):
     try:
@@ -65,7 +84,7 @@ class SistemaAcademico:
     def __init__(self, janela):
         self.janela = janela
         janela.title("Estacio")
-        janela.geometry("420x520")
+        janela.geometry("520x650")
 
         self.ui = tk.Frame(janela, bg="#ececec", padx=15, pady=15)
         self.ui.pack(fill="both", expand=True)
@@ -74,13 +93,25 @@ class SistemaAcademico:
 
     def campos(self):
         linha = 0
-        self.add_titulo("Cadastrar Estudante", linha)
+        self.add_titulo("Cadastrar / Editar Estudante", linha)
         linha += 1
         self.id_entrada = self.add_campo("ID:", linha)
         linha += 1
         self.nome_entrada = self.add_campo("Nome:", linha)
         linha += 1
+
         self.add_botao("Salvar Estudante", self.salvar_estudante, linha)
+        linha += 1
+        self.add_botao("Excluir Estudante", self.excluir_estudante, linha)
+        linha += 1
+        self.add_botao("Exportar Estudantes CSV", self.exportar_estudantes_csv, linha)
+        linha += 2
+
+        self.add_titulo("Estudantes Cadastrados (clique para editar)", linha)
+        linha += 1
+        self.lista_estudantes = tk.Listbox(self.ui, height=8)
+        self.lista_estudantes.grid(row=linha, column=0, columnspan=2, sticky="we")
+        self.lista_estudantes.bind("<<ListboxSelect>>", self.carregar_estudante_selecionado)
         linha += 2
 
         self.add_titulo("Cadastrar Matéria", linha)
@@ -109,6 +140,8 @@ class SistemaAcademico:
         linha += 1
         self.add_botao("Exibir Notas", self.ver_notas, linha)
 
+        self.carregar_lista_estudantes()
+
     def add_titulo(self, texto, linha):
         tk.Label(self.ui, text=texto, font=("Arial", 12, "bold"), bg="#ececec").grid(row=linha, column=0, columnspan=2, pady=(10, 5))
 
@@ -127,12 +160,80 @@ class SistemaAcademico:
             nome = self.nome_entrada.get().strip()
             if not nome:
                 raise ValueError
-            if inserir_estudante(id_aluno, nome):
-                messagebox.showinfo("OK", "Estudante salvo")
+            if any(id_aluno == e[0] for e in listar_estudantes()):
+                if alterar_estudante(id_aluno, nome):
+                    messagebox.showinfo("OK", "Estudante alterado")
+                else:
+                    messagebox.showerror("Erro", "Falha ao alterar")
             else:
-                messagebox.showerror("Erro", "ID já existe")
+                if inserir_estudante(id_aluno, nome):
+                    messagebox.showinfo("OK", "Estudante salvo")
+                else:
+                    messagebox.showerror("Erro", "ID já existe")
+            self.limpar_campos_estudante()
+            self.carregar_lista_estudantes()
         except ValueError:
             messagebox.showerror("Erro", "Dados inválidos")
+
+    def excluir_estudante(self):
+        try:
+            id_aluno = int(self.id_entrada.get())
+            if messagebox.askyesno("Confirmação", "Deseja realmente excluir este estudante?"):
+                excluir_estudante(id_aluno)
+                messagebox.showinfo("OK", "Estudante excluído")
+                self.limpar_campos_estudante()
+                self.carregar_lista_estudantes()
+        except ValueError:
+            messagebox.showerror("Erro", "ID inválido")
+
+    def carregar_lista_estudantes(self):
+        self.lista_estudantes.delete(0, tk.END)
+        for est in listar_estudantes():
+            self.lista_estudantes.insert(tk.END, f"{est[0]} - {est[1]}")
+
+    def carregar_estudante_selecionado(self, event):
+        selecao = self.lista_estudantes.curselection()
+        if selecao:
+            texto = self.lista_estudantes.get(selecao[0])
+            id_str = texto.split(" - ")[0]
+            try:
+                id_aluno = int(id_str)
+                with sqlite3.connect("academico.db") as banco:
+                    cur = banco.cursor()
+                    cur.execute("SELECT id, nome FROM estudantes WHERE id = ?", (id_aluno,))
+                    est = cur.fetchone()
+                    if est:
+                        self.id_entrada.delete(0, tk.END)
+                        self.id_entrada.insert(0, str(est[0]))
+                        self.nome_entrada.delete(0, tk.END)
+                        self.nome_entrada.insert(0, est[1])
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao carregar estudante: {e}")
+
+    def limpar_campos_estudante(self):
+        self.id_entrada.delete(0, tk.END)
+        self.nome_entrada.delete(0, tk.END)
+
+    def exportar_estudantes_csv(self):
+        estudantes = listar_estudantes()
+        if not estudantes:
+            messagebox.showinfo("Exportar CSV", "Nenhum estudante para exportar.")
+            return
+        caminho_arquivo = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Salvar arquivo CSV"
+        )
+        if not caminho_arquivo:
+            return
+        try:
+            with open(caminho_arquivo, mode="w", newline='', encoding="utf-8") as arquivo:
+                escritor = csv.writer(arquivo)
+                escritor.writerow(["ID", "Nome"])
+                escritor.writerows(estudantes)
+            messagebox.showinfo("Exportar CSV", f"Arquivo salvo em:\n{caminho_arquivo}")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao salvar CSV:\n{e}")
 
     def salvar_materia(self):
         codigo = self.codigo_materia.get().strip()
